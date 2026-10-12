@@ -453,6 +453,14 @@ def _node_search_text(data: dict, nid: str) -> str:
     return "\x00".join(fields)
 
 
+# A cold CLI explain builds this index and then exits. On a large graph that
+# build costs more than the full scan it was meant to skip (Hızlı Teklif:
+# about 1.1s to build, about 0.2s to scan). Serve keeps the graph object, so
+# the third lookup in the same process still builds and caches the index.
+_TRIGRAM_DEFER_MIN_NODES = 4000
+_TRIGRAM_DEFER_LOOKUPS = 2
+
+
 def _get_trigram_index(G: nx.Graph) -> dict:
     """Lazily build and cache a trigram -> node-position postings map on the graph.
 
@@ -487,7 +495,16 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
     common enough that the candidate set would approach the whole graph. The caller
     falls back to the full scan, preserving the never-worse contract. The guard is
     cheap: postings-length lookups only, no set intersection.
+
+    On a large graph the index is also skipped for the first
+    `_TRIGRAM_DEFER_LOOKUPS` calls while it is still cold: one full scan is
+    cheaper than building postings that a one-shot process will discard.
     """
+    if G.graph.get("_trigram_index") is None and G.number_of_nodes() >= _TRIGRAM_DEFER_MIN_NODES:
+        used = int(G.graph.get("_trigram_defer_uses") or 0) + 1
+        G.graph["_trigram_defer_uses"] = used
+        if used <= _TRIGRAM_DEFER_LOOKUPS:
+            return None
     idx = _get_trigram_index(G)
     ids, postings, set_cache = idx["ids"], idx["postings"], idx["set_cache"]
     n = len(ids)

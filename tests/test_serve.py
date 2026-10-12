@@ -434,6 +434,34 @@ def test_find_node_source_file_path_prefers_file_level_node():
     assert "example_route_get" in matches
 
 
+def test_large_graph_defers_trigram_index_and_still_resolves(monkeypatch):
+    """A cold one-shot lookup on a large graph must not pay the index build.
+
+    The index is faster only after it is reused. The CLI throws the process
+    away after one explain, and building the index there is slower than the
+    full scan it replaces. The third lookup in the same process (a warm
+    server) still builds and caches it.
+    """
+    import graphify.serve as serve_mod
+
+    G = _make_big_graph(20)
+    monkeypatch.setattr(serve_mod, "_TRIGRAM_DEFER_MIN_NODES", 10)
+    calls = {"n": 0}
+    real = serve_mod._get_trigram_index
+
+    def say(graph):
+        calls["n"] += 1
+        return real(graph)
+
+    monkeypatch.setattr(serve_mod, "_get_trigram_index", say)
+    assert _trigram_candidates(G, ["zebraquokkawidget"]) is None
+    assert _find_node(G, "ZebraQuokkaWidget") == ["rareA"]
+    assert calls["n"] == 0
+    third = _trigram_candidates(G, ["zebraquokkawidget"])
+    assert calls["n"] == 1
+    assert third is not None and "rareA" in third
+
+
 def test_trigram_index_cached_and_rebuilt_per_graph():
     G = _make_big_graph()
     idx1 = _get_trigram_index(G)
